@@ -1,0 +1,11 @@
+wg-obfuscator-nolibc-*
+*.o
+*.a
+*.so
+test-oz
+test-mips
+dist/
+__pycache__/
+*.pyc
+*.zip
+.DS_Store

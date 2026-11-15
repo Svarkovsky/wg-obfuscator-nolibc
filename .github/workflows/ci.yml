@@ -1,0 +1,77 @@
+name: CI & Release
+
+on:
+  push:
+    branches: [ "main" ]
+    tags: [ "v*" ]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build-and-release:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Build and verify in Debian Bookworm container
+        run: |
+          docker run --rm -v "$PWD":/workspace -w /workspace debian:bookworm bash -c "
+            set -euo pipefail
+            apt-get update
+            apt-get install -y --no-install-recommends \
+              gcc-mipsel-linux-gnu binutils-mipsel-linux-gnu \
+              gcc-mips-linux-gnu binutils-mips-linux-gnu \
+              gcc libc6-dev \
+              qemu-user-static python3 make git ca-certificates
+            
+            make clean
+            make mips32el mips32be x86_64
+            
+            echo '== Verify ELF layout =='
+            python3 tools/check_elf.py wg-obfuscator-nolibc-mips32el wg-obfuscator-nolibc-mips32be wg-obfuscator-nolibc-x86_64
+            
+            echo '== Smoke test under QEMU =='
+            qemu-mipsel-static ./wg-obfuscator-nolibc-mips32el --version
+            qemu-mipsel-static ./wg-obfuscator-nolibc-mips32el --help
+            qemu-mips-static ./wg-obfuscator-nolibc-mips32be --version
+            qemu-mips-static ./wg-obfuscator-nolibc-mips32be --help
+            ./wg-obfuscator-nolibc-x86_64 --version
+            ./wg-obfuscator-nolibc-x86_64 --help
+          "
+
+      - name: Prepare Release Assets
+        run: |
+          mkdir -p dist
+          cp wg-obfuscator-nolibc-mips32el dist/
+          cp wg-obfuscator-nolibc-mips32be dist/
+          cp wg-obfuscator-nolibc-x86_64 dist/
+          tar -czf dist/wg-obfuscator-nolibc-all.tar.gz wg-obfuscator-nolibc-mips32el wg-obfuscator-nolibc-mips32be wg-obfuscator-nolibc-x86_64 README.md TESTS.md LICENSE
+          cd dist
+          sha256sum wg-obfuscator-nolibc-* > SHA256SUMS
+          cat SHA256SUMS
+          cd ..
+
+      - name: Upload Artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: wg-obfuscator-binaries
+          path: dist/*
+
+      - name: Publish GitHub Release
+        if: startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          TAG="${GITHUB_REF#refs/tags/}"
+          if [ "$TAG" = "refs/heads/main" ] || [ "$TAG" = "main" ]; then
+            TAG="v1.6+-nolibc"
+          fi
+          gh release delete "$TAG" --yes 2>/dev/null || true
+          
+          gh release create "$TAG" \
+            --title "wg-obfuscator-nolibc $TAG" \
+            --notes-file RELEASE_NOTES.md \
+            dist/*
